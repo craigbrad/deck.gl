@@ -35,22 +35,23 @@ import {
   updateLayerInSeer
 } from '../debug/seer-integration';
 
+import {GL, withParameters} from 'luma.gl';
+/* global window */
+
 const LOG_PRIORITY_LIFECYCLE = 2;
 const LOG_PRIORITY_LIFECYCLE_MINOR = 4;
 
 export default class LayerManager {
   constructor({gl}) {
-    /* Currently deck.gl expects the DeckGL.layers to be different
-     whenever React rerenders. If the same layers array is used, the
-     LayerManager's diffing algorithm will generate a fatal error and
-     break the rendering.
+     // Currently deck.gl expects the DeckGL.layers array to be different
+     // whenever React rerenders. If the same layers array is used, the
+     // LayerManager's diffing algorithm will generate a fatal error and
+     // break the rendering.
 
-     `this.lastRenderedLayers` stores the UNFILTERED layers sent
-     down to LayerManager, so that `layers` reference can be compared.
-     If it's the same across two React render calls, the diffing logic
-     will be skipped.
-    */
-
+     // `this.lastRenderedLayers` stores the UNFILTERED layers sent
+     // down to LayerManager, so that `layers` reference can be compared.
+     // If it's the same across two React render calls, the diffing logic
+     // will be skipped.
     this.lastRenderedLayers = [];
 
     this.prevLayers = [];
@@ -73,6 +74,7 @@ export default class LayerManager {
     this.context = {
       gl,
       uniforms: {},
+      viewports: [],
       viewport: null,
       viewportChanged: true,
       pickingFBO: null,
@@ -92,29 +94,6 @@ export default class LayerManager {
   }
 
   /**
-   * Called upon Seer initialization, manually sends layers data.
-   */
-  _initSeer() {
-    this.layers.forEach(layer => {
-      initLayerInSeer(layer);
-      updateLayerInSeer(layer);
-    });
-  }
-
-  /**
-   * On Seer property edition, set override and update layers.
-   */
-  _editSeer(payload) {
-    if (payload.type !== 'edit' || payload.valuePath[0] !== 'props') {
-      return;
-    }
-
-    setPropOverrides(payload.itemKey, payload.valuePath.slice(1), payload.value);
-    const newLayers = this.layers.map(layer => new layer.constructor(layer.props));
-    this.updateLayers({newLayers});
-  }
-
-  /**
    * Method to call when the layer manager is not needed anymore.
    *
    * Currently used in the <DeckGL> componentWillUnmount lifecycle to unbind Seer listeners.
@@ -124,7 +103,10 @@ export default class LayerManager {
     seer.removeListener(this._editSeer);
   }
 
-  setViewport(viewport, zoom) {
+  setViewports(viewports) {
+    viewports = flatten(viewports, {filter: Boolean});
+
+    const viewport = viewports[0];
     assert(viewport instanceof Viewport, 'Invalid viewport');
 
     // TODO - viewport change detection breaks METER_OFFSETS mode
@@ -137,6 +119,7 @@ export default class LayerManager {
 
     if (viewportChanged) {
       Object.assign(this.oldContext, this.context);
+      this.context.viewports = viewports;
       this.context.viewport = viewport;
       this.context.viewportChanged = true;
       this.context.uniforms = {};
@@ -147,12 +130,11 @@ export default class LayerManager {
   }
 
   /**
-   * @param {Object} eventManager   A source of DOM input events
-   *                                with on()/off() methods for registration,
-   *                                which will call handlers with
-   *                                an Event object of the following shape:
-   *                                {Object: {x, y}} offsetCenter: center of the event
-   *                                {Object} srcEvent:             native JS Event object
+   * @param {Object} eventManager  - A source of DOM input events
+   *   with on()/off() methods for registration, which will call handlers with
+   *   an Event object of the following shape:
+   *     {Object: {x, y}} offsetCenter: center of the event
+   *     {Object} srcEvent:             native JS Event object
    */
   initEventHandling(eventManager) {
     this._eventManager = eventManager;
@@ -232,6 +214,63 @@ export default class LayerManager {
     return this;
   }
 
+  // TODO - this overlaps with draw and pick?
+  draw() {
+    const {gl} = this.context;
+    const height = gl.canvas.clientHeight;
+
+    const {useDevicePixelRatio} = this.context;
+    const pixelRatio = useDevicePixelRatio && typeof window !== 'undefined' ?
+      window.devicePixelRatio : 1;
+
+    // UpdateLayers
+    const viewports = this.context.viewports;
+
+    // clear depth and color buffers
+    gl.clear(GL.COLOR_BUFFER_BIT | GL.DEPTH_BUFFER_BIT);
+
+    // TODO - this should be moved into LayerManager
+    // this.effectManager.preDraw();
+
+    viewports.forEach((viewportOrDescriptor, i) => {
+      const viewport = this._getViewportFromDescriptor(viewportOrDescriptor);
+
+      // this._updateLayers(Object.assign({}, this.props, {viewport}));
+
+      // Convert viewport top-left CSS coordinates to bottom up WebGL coordinates
+      const glViewport = [
+        viewport.x * pixelRatio,
+        (height - viewport.y - viewport.height) * pixelRatio,
+        viewport.width * pixelRatio,
+        viewport.height * pixelRatio
+      ];
+
+      // render this viewport
+      withParameters(gl, {viewport: glViewport}, () => {
+        this.context.viewport = viewport;
+        this.drawLayers({pass: `viewport ${i}`});
+      });
+    });
+
+    // this.effectManager.draw();
+
+    // Picking
+    // if (this.props.onLayerHover) {
+    //   // Arbitrary gaze location
+    //   const x = this.props.width * 2 / 3;
+    //   const y = this.props.height / 2;
+
+    //   const info = this.queryObject({x, y, radius: this.props.pickingRadius});
+    //   this.props.onLayerHover(info);
+    // }
+  }
+
+  _getViewportFromDescriptor(viewportOrDescriptor) {
+    return viewportOrDescriptor.viewport ?
+      viewportOrDescriptor.viewport :
+      viewportOrDescriptor;
+  }
+
   drawLayers({pass}) {
     assert(this.context.viewport, 'LayerManager.drawLayers: viewport not set');
 
@@ -306,6 +345,16 @@ export default class LayerManager {
     }
 
     return redraw;
+  }
+
+  //
+  // DEPRECATED METHODS
+  //
+
+  setViewport(viewport) {
+    log.deprecated('setViewport', 'setViewports');
+    this.setViewports([viewport]);
+    return this;
   }
 
   //
@@ -634,6 +683,29 @@ export default class LayerManager {
       radius: this._pickingRadius,
       mode: 'hover'
     });
+  }
+
+  /**
+   * Called upon Seer initialization, manually sends layers data.
+   */
+  _initSeer() {
+    this.layers.forEach(layer => {
+      initLayerInSeer(layer);
+      updateLayerInSeer(layer);
+    });
+  }
+
+  /**
+   * On Seer property edition, set override and update layers.
+   */
+  _editSeer(payload) {
+    if (payload.type !== 'edit' || payload.valuePath[0] !== 'props') {
+      return;
+    }
+
+    setPropOverrides(payload.itemKey, payload.valuePath.slice(1), payload.value);
+    const newLayers = this.layers.map(layer => new layer.constructor(layer.props));
+    this.updateLayers({newLayers});
   }
 }
 
