@@ -24,7 +24,7 @@ import seer from 'seer';
 import Layer from './layer';
 import {log} from './utils';
 import {flatten} from './utils/flatten';
-import {drawLayers, pickLayers, queryLayers} from './draw-and-pick';
+import {clearCanvas, drawLayers, pickLayers, queryLayers} from './draw-and-pick';
 import {LIFECYCLE} from './constants';
 import Viewport from '../viewports/viewport';
 import {
@@ -34,9 +34,6 @@ import {
   initLayerInSeer,
   updateLayerInSeer
 } from '../debug/seer-integration';
-
-import {GL, withParameters} from 'luma.gl';
-/* global window */
 
 const LOG_PRIORITY_LIFECYCLE = 2;
 const LOG_PRIORITY_LIFECYCLE_MINOR = 4;
@@ -214,67 +211,37 @@ export default class LayerManager {
     return this;
   }
 
-  // TODO - this overlaps with draw and pick?
-  draw() {
-    const {gl} = this.context;
-    const height = gl.canvas.clientHeight;
+  drawLayers() {
+    const {gl, useDevicePixelRatio} = this.context;
+    clearCanvas(gl, {useDevicePixelRatio});
 
-    const {useDevicePixelRatio} = this.context;
-    const pixelRatio = useDevicePixelRatio && typeof window !== 'undefined' ?
-      window.devicePixelRatio : 1;
-
-    // UpdateLayers
-    const viewports = this.context.viewports;
-
-    // clear depth and color buffers
-    gl.clear(GL.COLOR_BUFFER_BIT | GL.DEPTH_BUFFER_BIT);
-
-    // TODO - this should be moved into LayerManager
     // this.effectManager.preDraw();
 
-    viewports.forEach((viewportOrDescriptor, i) => {
+    this.context.viewports.forEach((viewportOrDescriptor, i) => {
       const viewport = this._getViewportFromDescriptor(viewportOrDescriptor);
 
-      // this._updateLayers(Object.assign({}, this.props, {viewport}));
+      // Update context to point to this viewport
+      this.context.viewport = viewport;
+      assert(this.context.viewport, 'LayerManager.drawLayers: viewport not set');
 
-      // Convert viewport top-left CSS coordinates to bottom up WebGL coordinates
-      const glViewport = [
-        viewport.x * pixelRatio,
-        (height - viewport.y - viewport.height) * pixelRatio,
-        viewport.width * pixelRatio,
-        viewport.height * pixelRatio
-      ];
+      // Update layers states
+      // Let screen space layers update their state based on viewport
+      // TODO - reimplement viewport change detection (single viewport optimization)
+      // TODO - don't set viewportChanged during setViewports?
+      if (this.context.viewportChanged) {
+        this._updateLayerStates({viewportChanged: true});
+      }
 
       // render this viewport
-      withParameters(gl, {viewport: glViewport}, () => {
-        this.context.viewport = viewport;
-        this.drawLayers({pass: `viewport ${i}`});
+      drawLayers(gl, {
+        layers: this.layers,
+        viewport,
+        useDevicePixelRatio,
+        pass: `viewport ${i}`
       });
     });
 
     // this.effectManager.draw();
-
-    // Picking
-    // if (this.props.onLayerHover) {
-    //   // Arbitrary gaze location
-    //   const x = this.props.width * 2 / 3;
-    //   const y = this.props.height / 2;
-
-    //   const info = this.queryObject({x, y, radius: this.props.pickingRadius});
-    //   this.props.onLayerHover(info);
-    // }
-  }
-
-  _getViewportFromDescriptor(viewportOrDescriptor) {
-    return viewportOrDescriptor.viewport ?
-      viewportOrDescriptor.viewport :
-      viewportOrDescriptor;
-  }
-
-  drawLayers({pass}) {
-    assert(this.context.viewport, 'LayerManager.drawLayers: viewport not set');
-
-    drawLayers({layers: this.layers, pass});
 
     return this;
   }
@@ -360,6 +327,20 @@ export default class LayerManager {
   //
   // PRIVATE METHODS
   //
+
+  // Walk the layers and update their states
+  _updateLayerStates(changeFlags) {
+    for (const layer of this.layers) {
+      layer.updateLayer({changeFlags});
+    }
+  }
+
+  // Get a viewport from a viewport descriptor (which can be a plain viewport)
+  _getViewportFromDescriptor(viewportOrDescriptor) {
+    return viewportOrDescriptor.viewport ?
+      viewportOrDescriptor.viewport :
+      viewportOrDescriptor;
+  }
 
   _getPickingBuffer() {
     const {gl} = this.context;
