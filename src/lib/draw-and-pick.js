@@ -28,6 +28,17 @@ let renderCount = 0;
 const getPixelRatio = ({useDevicePixelRatio}) =>
   useDevicePixelRatio && typeof window !== 'undefined' ? window.devicePixelRatio : 1;
 
+// Convert viewport top-left CSS coordinates to bottom up WebGL coordinates
+const getGLViewport = (gl, {viewport, pixelRatio}) => {
+  const height = gl.canvas.clientHeight;
+  return [
+    viewport.x * pixelRatio,
+    (height - viewport.y - viewport.height) * pixelRatio,
+    viewport.width * pixelRatio,
+    viewport.height * pixelRatio
+  ];
+};
+
 export function clearCanvas(gl, {useDevicePixelRatio}) {
   const pixelRatio = getPixelRatio({useDevicePixelRatio});
   // TODO - use width and height directly?
@@ -42,15 +53,7 @@ export function clearCanvas(gl, {useDevicePixelRatio}) {
 
 export function drawLayers(gl, {layers, viewport, useDevicePixelRatio, pass}) {
   const pixelRatio = getPixelRatio({useDevicePixelRatio});
-
-  // Convert viewport top-left CSS coordinates to bottom up WebGL coordinates
-  const height = gl.canvas.clientHeight;
-  const glViewport = [
-    viewport.x * pixelRatio,
-    (height - viewport.y - viewport.height) * pixelRatio,
-    viewport.width * pixelRatio,
-    viewport.height * pixelRatio
-  ];
+  const glViewport = getGLViewport(gl, {viewport, pixelRatio});
 
   // render layers in normal colors
   let visibleCount = 0;
@@ -123,38 +126,42 @@ export function queryLayers(gl, {
   // Convert from canvas top-left to WebGL bottom-left coordinates
   // And compensate for pixelRatio
   const pixelRatio = getPixelRatio({useDevicePixelRatio});
+  const glViewport = getGLViewport(gl, {viewport, pixelRatio});
 
   const deviceLeft = Math.round(x * pixelRatio);
   const deviceBottom = Math.round(gl.canvas.height - y * pixelRatio);
   const deviceRight = Math.round((x + width) * pixelRatio);
   const deviceTop = Math.round(gl.canvas.height - (y + height) * pixelRatio);
 
-  const pickInfos = getUniquesFromPickingBuffer(gl, {
-    layers,
-    pickingFBO,
-    deviceRect: {
-      x: deviceLeft,
-      y: deviceTop,
-      width: deviceRight - deviceLeft,
-      height: deviceBottom - deviceTop
-    }
-  });
-
   // Only return unique infos, identified by info.object
   const uniqueInfos = new Map();
 
-  pickInfos.forEach(pickInfo => {
-    let info = createInfo([pickInfo.x / pixelRatio, pickInfo.y / pixelRatio], viewport);
-    info.devicePixel = [pickInfo.x, pickInfo.y];
-    info.pixelRatio = pixelRatio;
-    info.color = pickInfo.pickedColor;
-    info.index = pickInfo.pickedObjectIndex;
-    info.picked = true;
+  withParameters(gl, {viewport: glViewport}, () => {
 
-    info = getLayerPickingInfo({layer: pickInfo.pickedLayer, info, mode});
-    if (!uniqueInfos.has(info.object)) {
-      uniqueInfos.set(info.object, info);
-    }
+    const pickInfos = getUniquesFromPickingBuffer(gl, {
+      layers,
+      pickingFBO,
+      deviceRect: {
+        x: deviceLeft,
+        y: deviceTop,
+        width: deviceRight - deviceLeft,
+        height: deviceBottom - deviceTop
+      }
+    });
+
+    pickInfos.forEach(pickInfo => {
+      let info = createInfo([pickInfo.x / pixelRatio, pickInfo.y / pixelRatio], viewport);
+      info.devicePixel = [pickInfo.x, pickInfo.y];
+      info.pixelRatio = pixelRatio;
+      info.color = pickInfo.pickedColor;
+      info.index = pickInfo.pickedObjectIndex;
+      info.picked = true;
+
+      info = getLayerPickingInfo({layer: pickInfo.pickedLayer, info, mode});
+      if (!uniqueInfos.has(info.object)) {
+        uniqueInfos.set(info.object, info);
+      }
+    });
   });
 
   return Array.from(uniqueInfos.values());
@@ -173,26 +180,35 @@ export function pickLayers(gl, {
   lastPickedInfo,
   useDevicePixelRatio
 }) {
-
   // Convert from canvas top-left to WebGL bottom-left coordinates
   // And compensate for pixelRatio
   const pixelRatio = getPixelRatio({useDevicePixelRatio});
+  const glViewport = getGLViewport(gl, {viewport, pixelRatio});
 
   const deviceX = Math.round(x * pixelRatio);
   const deviceY = Math.round(gl.canvas.height - y * pixelRatio);
   const deviceRadius = Math.round(radius * pixelRatio);
 
+  let pickInfo = null;
+
+  withParameters(gl, {viewport: glViewport}, () => {
+
+    pickInfo = getClosestFromPickingBuffer(gl, {
+      layers,
+      pickingFBO,
+      deviceX,
+      deviceY,
+      deviceRadius
+    });
+
+  });
+
   const {
     pickedColor,
     pickedLayer,
     pickedObjectIndex
-  } = getClosestFromPickingBuffer(gl, {
-    layers,
-    pickingFBO,
-    deviceX,
-    deviceY,
-    deviceRadius
-  });
+  } = pickInfo;
+
   const affectedLayers = pickedLayer ? [pickedLayer] : [];
 
   if (mode === 'hover') {

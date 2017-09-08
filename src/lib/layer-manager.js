@@ -211,7 +211,7 @@ export default class LayerManager {
     return this;
   }
 
-  drawLayers() {
+  drawLayers({pass}) {
     const {gl, useDevicePixelRatio} = this.context;
     clearCanvas(gl, {useDevicePixelRatio});
 
@@ -237,7 +237,7 @@ export default class LayerManager {
         layers: this.layers,
         viewport,
         useDevicePixelRatio,
-        pass: `viewport ${i}`
+        pass
       });
     });
 
@@ -249,21 +249,46 @@ export default class LayerManager {
   // Pick the closest info at given coordinate
   pickLayer({x, y, mode, radius = 0, layerIds}) {
     const {gl, useDevicePixelRatio} = this.context;
+
     const layers = layerIds ?
-      this.layers.filter(layer => layerIds.indexOf(layer.id) >= 0) :
+      // FIlter on start of id to capture sublayers (which by convention add suffixes to id)
+      this.layers.filter(layer => layerIds.find(layerId => layer.id.indexOf(layerId) === 0)) :
       this.layers;
 
-    return pickLayers(gl, {
-      x,
-      y,
-      radius,
-      layers,
-      mode,
-      viewport: this.context.viewport,
-      pickingFBO: this._getPickingBuffer(),
-      lastPickedInfo: this.context.lastPickedInfo,
-      useDevicePixelRatio
+    const pickInfos = [];
+
+    this.context.viewports.forEach((viewportOrDescriptor, i) => {
+      const viewport = this._getViewportFromDescriptor(viewportOrDescriptor);
+
+      // Update context to point to this viewport
+      this.context.viewport = viewport;
+      assert(this.context.viewport, 'LayerManager.drawLayers: viewport not set');
+
+      // Update layers states
+      // Let screen space layers update their state based on viewport
+      // TODO - reimplement viewport change detection (single viewport optimization)
+      // TODO - don't set viewportChanged during setViewports?
+      if (this.context.viewportChanged) {
+        this._updateLayerStates({viewportChanged: true});
+      }
+
+      // TODO this causes one readback per viewport, we must consolidate
+      const pickInfo = pickLayers(gl, {
+        x,
+        y,
+        radius,
+        layers,
+        mode,
+        viewport: this.context.viewport,
+        pickingFBO: this._getPickingBuffer(),
+        lastPickedInfo: this.context.lastPickedInfo,
+        useDevicePixelRatio
+      });
+
+      pickInfos.push(...pickInfo);
     });
+
+    return pickInfos;
   }
 
   // Get all unique infos within a bounding box

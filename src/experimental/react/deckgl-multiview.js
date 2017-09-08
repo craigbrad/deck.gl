@@ -60,6 +60,6 @@ export default class DeckGLMultiView extends DeckGL {
   _onRenderFrame({gl}) {
     const viewports = this._getViewports();
     this.layerManager.setViewports(viewports);
-    this.layerManager.draw();
+    this.layerManager.drawLayers({pass: 'render'});
   }
 }
